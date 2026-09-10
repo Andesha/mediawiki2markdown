@@ -10,28 +10,26 @@ def sanitize_filename(title):
     cleaned = re.sub(r'[\\/:*?"<>|]', '-', title)
     return cleaned.strip()[:250]
 
-def clean_translation_tags(wikitext):
-    """Removes translation system markers from the MediaWiki code before conversion."""
-    # 1. Strip <languages /> and <languages>...</languages> blocks completely
-    text = re.sub(r'<languages\s*/?>.*?(</languages>)?', '', wikitext, flags=re.IGNORECASE | re.DOTALL)
-
-    # 2. Strip opening and closing <translate> tags, but KEEP the actual human content inside them
-    text = re.sub(r'</?translate\s*>', '', text, flags=re.IGNORECASE)
-
-    # 3. Strip individual unit tracking comment markers like <!--T:12-->
-    text = re.sub(r'<!--T:\d+-->', '', text)
-
-    return text
-
-def mediawiki_to_markdown(wikitext):
-    """Cleans up translation tags and converts MediaWiki markup to clean Markdown using Pandoc."""
+def html_to_markdown(html):
+    """Converts MediaWiki-rendered HTML to GitHub-Flavored Markdown."""
     try:
-        cleaned_wikitext = clean_translation_tags(wikitext)
-        markdown = pypandoc.convert_text(cleaned_wikitext, 'gfm', format='mediawiki')
-        return markdown
+        return pypandoc.convert_text(html, 'gfm', format='html')
     except Exception as e:
-        print(f" Pandoc conversion failed, saving raw text fallback. Error: {e}")
-        return wikitext
+        print(f" Pandoc conversion failed, saving rendered HTML fallback. Error: {e}")
+        return html
+
+
+def get_rendered_html(site, page_name):
+    """Asks MediaWiki to render a page, including templates and extension tags."""
+    response = site.api(
+        'parse',
+        page=page_name,
+        prop='text',
+        disableeditsection=True,
+        disabletoc=True,
+        formatversion=2,
+    )
+    return response['parse']['text']
 
 def convert_internal_links(markdown_content, available_base_titles):
     """Rewrites MediaWiki style [[Links]] into relative local Markdown links if the target exists."""
@@ -189,7 +187,7 @@ def dump_wiki_to_markdown_incremental(site_url, site_path, output_dir, force_ful
             print(f"Generating page directory index at: {index_path}")
             with open(index_path, "w", encoding="utf-8") as f:
                 f.write(f"# Documentation Index ({lang.upper()})\n\n")
-                f.write(f"This is an automated structural index map of all available pages for this AI agent workspace.\n\n")
+                f.write("This is an automated structural index map of all available pages for this AI agent workspace.\n\n")
                 for display_title, b_title in sorted(exported_pages[lang], key=lambda x: x):
                     safe_file = sanitize_filename(b_title)
                     f.write(f"* [{display_title}](./{safe_file}.md)\n")
@@ -236,12 +234,12 @@ def process_page(site, page_obj, lang, base_title, output_dir, stats, force_full
         display_title = get_display_title(site, page_obj.name, base_title)
 
         print(f"[{lang.upper()}] Downloading & converting: {base_title}")
-        wikitext = page_obj.text()
+        rendered_html = get_rendered_html(site, page_obj.name)
 
-        if not wikitext.strip():
+        if not rendered_html.strip():
             return base_title
 
-        markdown_content = mediawiki_to_markdown(wikitext)
+        markdown_content = html_to_markdown(rendered_html)
 
         if convert_links:
             markdown_content = convert_internal_links(markdown_content, all_valid_titles)

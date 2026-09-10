@@ -15,7 +15,7 @@ def html_to_markdown(html):
     try:
         return pypandoc.convert_text(
             html,
-            'gfm',
+            'gfm-raw_html',
             format='html-native_divs-native_spans',
         )
     except Exception as e:

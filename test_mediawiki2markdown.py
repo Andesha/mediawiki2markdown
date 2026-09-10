@@ -56,6 +56,19 @@ class LiveWikiConversionTests(unittest.TestCase):
 
         self.assertEqual(rendered_html, converted)
 
+    def test_translation_divs_inside_code_are_removed(self):
+        rendered_html = (
+            "<pre>first line\n"
+            '&lt;div class="mw-translate-fuzzy"&gt;second line&lt;/div&gt;'
+            "</pre>"
+        )
+
+        markdown = html_to_markdown(rendered_html)
+
+        self.assertIn("first line", markdown)
+        self.assertIn("second line", markdown)
+        self.assertNotRegex(markdown, r"</?div\b")
+
 
 if __name__ == "__main__":
     unittest.main()

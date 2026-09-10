@@ -29,6 +29,12 @@ def html_to_markdown(rendered_html):
         rendered_html,
         flags=re.IGNORECASE | re.DOTALL,
     )
+    # Translation markup can put div wrappers inside <pre> blocks. Pandoc then
+    # emits those wrappers as literal code instead of converting them.
+    cleaned_html = re.sub(r"</?div\b[^>]*>", "\n", cleaned_html, flags=re.IGNORECASE)
+    cleaned_html = re.sub(
+        r"&lt;/?div\b.*?&gt;", "\n", cleaned_html, flags=re.IGNORECASE
+    )
 
     try:
         return pypandoc.convert_text(

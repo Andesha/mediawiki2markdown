@@ -60,7 +60,43 @@ def should_exclude(page_name, exclude_patterns):
             return True
     return False
 
-def dump_wiki_to_markdown_incremental(site_url, site_path, output_dir, force_full=False, exclude_patterns=None, convert_links=False, generate_index=False):
+def purge_deleted_local_files(output_dir, expected_files_by_lang):
+    """Scans the local output directories and deletes files that no longer exist on the live wiki."""
+    print("\nReconciling local workspace against live wiki to clean deleted pages...")
+    purged_count = 0
+
+    for lang in ["en", "fr"]:
+        lang_dir = os.path.join(output_dir, lang)
+        if not os.path.exists(lang_dir):
+            continue
+
+        valid_safe_names = expected_files_by_lang[lang]
+
+        for filename in os.listdir(lang_dir):
+            if filename == "index.md":
+                continue
+
+            if filename.endswith(".md"):
+                base_name = filename[:-3]
+            elif filename.endswith(".md.meta"):
+                base_name = filename[:-8]
+            else:
+                continue
+
+            if base_name not in valid_safe_names:
+                target_path = os.path.join(lang_dir, filename)
+                try:
+                    os.remove(target_path)
+                    purged_count += 1
+                except Exception as e:
+                    print(f" Failed to delete legacy file {target_path}: {e}")
+
+    if purged_count > 0:
+        print(f" Purged {purged_count} orphaned local files (.md and .meta) representing deleted wiki pages.")
+    else:
+        print(" Local directory completely in sync. No orphaned files found.")
+
+def dump_wiki_to_markdown_incremental(site_url, site_path, output_dir, force_full=False, exclude_patterns=None, convert_links=False, generate_index=False, clean_deleted=False):
     if exclude_patterns is None:
         exclude_patterns = []
 
@@ -125,22 +161,27 @@ def dump_wiki_to_markdown_incremental(site_url, site_path, output_dir, force_ful
 
     stats = {"downloaded": 0, "skipped": 0, "failed": 0}
     exported_pages = {"en": [], "fr": []}
+    expected_filenames_by_lang = {"en": set(), "fr": set()}
 
     for base_title, variants in pages_by_base.items():
         has_en = 'en' in variants
         has_fr = 'fr' in variants
         has_default = 'default' in variants
+        safe_name = sanitize_filename(base_title)
 
         if has_en or has_fr:
             if has_en:
                 process_page(variants['en'], 'en', base_title, output_dir, stats, force_full, convert_links, pages_by_base)
                 exported_pages["en"].append(base_title)
+                expected_filenames_by_lang["en"].add(safe_name)
             if has_fr:
                 process_page(variants['fr'], 'fr', base_title, output_dir, stats, force_full, convert_links, pages_by_base)
                 exported_pages["fr"].append(base_title)
+                expected_filenames_by_lang["fr"].add(safe_name)
         elif has_default:
             process_page(variants['default'], 'en', base_title, output_dir, stats, force_full, convert_links, pages_by_base)
             exported_pages["en"].append(base_title)
+            expected_filenames_by_lang["en"].add(safe_name)
 
     if generate_index:
         for lang in ["en", "fr"]:
@@ -152,6 +193,9 @@ def dump_wiki_to_markdown_incremental(site_url, site_path, output_dir, force_ful
                 for page_title in sorted(exported_pages[lang]):
                     safe_file = sanitize_filename(page_title)
                     f.write(f"* [{page_title}](./{safe_file}.md)\n")
+
+    if clean_deleted:
+        purge_deleted_local_files(output_dir, expected_filenames_by_lang)
 
     print(f"\nDump finished! New/Updated: {stats['downloaded']} | Skipped (up-to-date): {stats['skipped']} | Failed: {stats['failed']}")
 
@@ -248,6 +292,11 @@ if __name__ == "__main__":
         help='Regex pattern to exclude pages.'
     )
     parser.add_argument(
+        '--clean-deleted',
+        action='store_true',
+        help='Scan the local output directory and delete files belonging to pages that were removed from the live wiki.'
+    )
+    parser.add_argument(
         '--exclude-file',
         type=str,
         help='Path to a text file containing regex exclusion patterns, one per line.'
@@ -270,6 +319,7 @@ if __name__ == "__main__":
         force_full=args.force_full,
         exclude_patterns=patterns,
         convert_links=args.convert_links,
-        generate_index=args.generate_index
+        generate_index=args.generate_index,
+        clean_deleted=args.clean_deleted
     )
 

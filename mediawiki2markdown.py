@@ -33,6 +33,26 @@ def mediawiki_to_markdown(wikitext):
         print(f" Pandoc conversion failed, saving raw text fallback. Error: {e}")
         return wikitext
 
+def convert_internal_links(markdown_content, available_base_titles):
+    """Rewrites MediaWiki style [[Links]] into relative local Markdown links if the target exists."""
+    def replace_link(match):
+        target = match.group(1).strip()
+        display_text = match.group(2).strip() if match.group(2) else target
+
+        if target.endswith('/en') or target.endswith('/fr'):
+            base_target = target[:-3]
+        else:
+            base_target = target
+
+        if base_target in available_base_titles:
+            safe_file = sanitize_filename(base_target)
+            return f"[{display_text}](./{safe_file}.md)"
+
+        return display_text
+
+    pattern = r'\[\[([^\]|]+)(?:\|([^\]]+))?\]\]'
+    return re.sub(pattern, replace_link, markdown_content)
+
 def should_exclude(page_name, exclude_patterns):
     """Checks if a page name matches any of the compiled regex exclusion patterns."""
     for pattern in exclude_patterns:
@@ -40,7 +60,7 @@ def should_exclude(page_name, exclude_patterns):
             return True
     return False
 
-def dump_wiki_to_markdown_incremental(site_url, site_path, output_dir, force_full=False, exclude_patterns=None):
+def dump_wiki_to_markdown_incremental(site_url, site_path, output_dir, force_full=False, exclude_patterns=None, convert_links=False, generate_index=False):
     if exclude_patterns is None:
         exclude_patterns = []
 
@@ -104,6 +124,7 @@ def dump_wiki_to_markdown_incremental(site_url, site_path, output_dir, force_ful
     os.makedirs(f"{output_dir}/fr", exist_ok=True)
 
     stats = {"downloaded": 0, "skipped": 0, "failed": 0}
+    exported_pages = {"en": [], "fr": []}
 
     for base_title, variants in pages_by_base.items():
         has_en = 'en' in variants
@@ -112,15 +133,29 @@ def dump_wiki_to_markdown_incremental(site_url, site_path, output_dir, force_ful
 
         if has_en or has_fr:
             if has_en:
-                process_page(variants['en'], 'en', base_title, output_dir, stats, force_full)
+                process_page(variants['en'], 'en', base_title, output_dir, stats, force_full, convert_links, pages_by_base)
+                exported_pages["en"].append(base_title)
             if has_fr:
-                process_page(variants['fr'], 'fr', base_title, output_dir, stats, force_full)
+                process_page(variants['fr'], 'fr', base_title, output_dir, stats, force_full, convert_links, pages_by_base)
+                exported_pages["fr"].append(base_title)
         elif has_default:
-            process_page(variants['default'], 'en', base_title, output_dir, stats, force_full)
+            process_page(variants['default'], 'en', base_title, output_dir, stats, force_full, convert_links, pages_by_base)
+            exported_pages["en"].append(base_title)
+
+    if generate_index:
+        for lang in ["en", "fr"]:
+            index_path = os.path.join(output_dir, lang, "index.md")
+            print(f"Generating page directory index at: {index_path}")
+            with open(index_path, "w", encoding="utf-8") as f:
+                f.write(f"# Documentation Index ({lang.upper()})\n\n")
+                f.write(f"This is an automated structural index map of all available pages for this AI agent workspace.\n\n")
+                for page_title in sorted(exported_pages[lang]):
+                    safe_file = sanitize_filename(page_title)
+                    f.write(f"* [{page_title}](./{safe_file}.md)\n")
 
     print(f"\nDump finished! New/Updated: {stats['downloaded']} | Skipped (up-to-date): {stats['skipped']} | Failed: {stats['failed']}")
 
-def process_page(page_obj, lang, base_title, output_dir, stats, force_full):
+def process_page(page_obj, lang, base_title, output_dir, stats, force_full, convert_links, all_valid_titles):
     """Checks metadata first, skips if unchanged, otherwise downloads, cleans, and converts."""
     try:
         safe_title = sanitize_filename(base_title)
@@ -149,6 +184,9 @@ def process_page(page_obj, lang, base_title, output_dir, stats, force_full):
 
         markdown_content = mediawiki_to_markdown(wikitext)
 
+        if convert_links:
+            markdown_content = convert_internal_links(markdown_content, all_valid_titles)
+
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(f"# {base_title}\n\n")
             f.write(markdown_content)
@@ -170,7 +208,6 @@ def process_page(page_obj, lang, base_title, output_dir, stats, force_full):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Dump any MediaWiki content instance into clean Markdown files.")
 
-    # Required Site Configuration Arguments (No defaults)
     parser.add_argument(
         '-s', '--site',
         type=str,
@@ -183,27 +220,33 @@ if __name__ == "__main__":
         required=True,
         help='REQUIRED: The sub-path portion of the wiki API endpoint (e.g., /w/ or /wiki_api/).'
     )
-
     parser.add_argument(
         '-o', '--output-dir',
         type=str,
         default='wiki_markdown_dump',
         help='The root directory where the "en" and "fr" subfolders should be created (default: wiki_markdown_dump).'
     )
-
     parser.add_argument(
         '--force-full',
         action='store_true',
         help='Bypass the cache check and force a complete download/conversion of all pages.'
     )
-
+    parser.add_argument(
+        '--convert-links',
+        action='store_true',
+        help='Convert MediaWiki [[Internal Links]] to relative Markdown link strings pointing to local files.'
+    )
+    parser.add_argument(
+        '--generate-index',
+        action='store_true',
+        help='Generate an index.md table of contents within the language output subdirectories.'
+    )
     parser.add_argument(
         '-x', '--exclude',
         action='append',
         default=[],
         help='Regex pattern to exclude pages.'
     )
-
     parser.add_argument(
         '--exclude-file',
         type=str,
@@ -225,6 +268,8 @@ if __name__ == "__main__":
         site_path=args.path,
         output_dir=args.output_dir,
         force_full=args.force_full,
-        exclude_patterns=patterns
+        exclude_patterns=patterns,
+        convert_links=args.convert_links,
+        generate_index=args.generate_index
     )
 

@@ -1,7 +1,10 @@
+import argparse
+import html as html_module
+import json
 import os
 import re
-import json
-import argparse
+from urllib.parse import unquote, urlsplit
+
 import mwclient
 import pypandoc
 
@@ -10,17 +13,32 @@ def sanitize_filename(title):
     cleaned = re.sub(r'[\\/:*?"<>|]', '-', title)
     return cleaned.strip()[:250]
 
-def html_to_markdown(html):
+def html_to_markdown(rendered_html):
     """Converts MediaWiki-rendered HTML to GitHub-Flavored Markdown."""
+    def clean_title(match):
+        title = html_module.unescape(match.group(3))
+        title = re.sub(r"<[^>]+>", "", title)
+        title = " ".join(title.split())
+        escaped_title = html_module.escape(title, quote=True)
+        return f"{match.group(1)}{match.group(2)}{escaped_title}{match.group(2)}"
+
+    title_pattern = r"(\btitle\s*=\s*)([\"'])(.*?)\2"
+    cleaned_html = re.sub(
+        title_pattern,
+        clean_title,
+        rendered_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
     try:
         return pypandoc.convert_text(
-            html,
+            cleaned_html,
             'gfm-raw_html',
             format='html-native_divs-native_spans',
         )
     except Exception as e:
         print(f" Pandoc conversion failed, saving rendered HTML fallback. Error: {e}")
-        return html
+        return cleaned_html
 
 
 def get_rendered_html(site, page_name):
@@ -35,25 +53,41 @@ def get_rendered_html(site, page_name):
     )
     return response['parse']['text']
 
-def convert_internal_links(markdown_content, available_base_titles):
-    """Rewrites MediaWiki style [[Links]] into relative local Markdown links if the target exists."""
-    def replace_link(match):
-        target = match.group(1).strip()
-        display_text = match.group(2).strip() if match.group(2) else target
+def convert_internal_links(rendered_html, available_base_titles, current_lang):
+    """Points links to exported wiki pages at their local Markdown files."""
+    def replace_href(match):
+        href = html_module.unescape(match.group(3))
+        parsed = urlsplit(href)
 
-        if target.endswith('/en') or target.endswith('/fr'):
-            base_target = target[:-3]
-        else:
-            base_target = target
+        if parsed.netloc and parsed.netloc != "docs.alliancecan.ca":
+            return match.group(0)
+        if not parsed.path.startswith("/wiki/"):
+            return match.group(0)
 
-        if base_target in available_base_titles:
-            safe_file = sanitize_filename(base_target)
-            return f"[{display_text}](./{safe_file}.md)"
+        target = unquote(parsed.path.removeprefix("/wiki/")).replace("_", " ")
+        target_lang = "en"
+        if target.endswith("/en") or target.endswith("/fr"):
+            target_lang = target[-2:]
+            target = target[:-3]
 
-        return display_text
+        if target not in available_base_titles:
+            return match.group(0)
 
-    pattern = r'\[\[([^\]|]+)(?:\|([^\]]+))?\]\]'
-    return re.sub(pattern, replace_link, markdown_content)
+        prefix = "./" if target_lang == current_lang else f"../{target_lang}/"
+        local_href = f"{prefix}{sanitize_filename(target)}.md"
+        if parsed.fragment:
+            local_href += f"#{parsed.fragment}"
+
+        quote = match.group(2)
+        return f"{match.group(1)}{quote}{html_module.escape(local_href, quote=True)}{quote}"
+
+    href_pattern = r"(\bhref\s*=\s*)([\"'])(.*?)\2"
+    return re.sub(
+        href_pattern,
+        replace_href,
+        rendered_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
 
 def should_exclude(page_name, exclude_patterns):
     """Checks if a page name matches any of the compiled regex exclusion patterns."""
@@ -243,10 +277,14 @@ def process_page(site, page_obj, lang, base_title, output_dir, stats, force_full
         if not rendered_html.strip():
             return base_title
 
-        markdown_content = html_to_markdown(rendered_html)
-
         if convert_links:
-            markdown_content = convert_internal_links(markdown_content, all_valid_titles)
+            rendered_html = convert_internal_links(
+                rendered_html,
+                all_valid_titles,
+                lang,
+            )
+
+        markdown_content = html_to_markdown(rendered_html)
 
         with open(file_path, "w", encoding="utf-8") as f:
             # Writes the API-retrieved translated display_title directly inside the content payload

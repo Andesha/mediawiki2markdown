@@ -13,7 +13,11 @@ def sanitize_filename(title):
 def html_to_markdown(html):
     """Converts MediaWiki-rendered HTML to GitHub-Flavored Markdown."""
     try:
-        return pypandoc.convert_text(html, 'gfm', format='html')
+        return pypandoc.convert_text(
+            html,
+            'gfm',
+            format='html-native_divs-native_spans',
+        )
     except Exception as e:
         print(f" Pandoc conversion failed, saving rendered HTML fallback. Error: {e}")
         return html

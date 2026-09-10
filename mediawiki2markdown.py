@@ -171,16 +171,16 @@ def dump_wiki_to_markdown_incremental(site_url, site_path, output_dir, force_ful
 
         if has_en or has_fr:
             if has_en:
-                process_page(variants['en'], 'en', base_title, output_dir, stats, force_full, convert_links, pages_by_base)
-                exported_pages["en"].append(base_title)
+                display_title = process_page(site, variants['en'], 'en', base_title, output_dir, stats, force_full, convert_links, pages_by_base)
+                exported_pages["en"].append((display_title, base_title))
                 expected_filenames_by_lang["en"].add(safe_name)
             if has_fr:
-                process_page(variants['fr'], 'fr', base_title, output_dir, stats, force_full, convert_links, pages_by_base)
-                exported_pages["fr"].append(base_title)
+                display_title = process_page(site, variants['fr'], 'fr', base_title, output_dir, stats, force_full, convert_links, pages_by_base)
+                exported_pages["fr"].append((display_title, base_title))
                 expected_filenames_by_lang["fr"].add(safe_name)
         elif has_default:
-            process_page(variants['default'], 'en', base_title, output_dir, stats, force_full, convert_links, pages_by_base)
-            exported_pages["en"].append(base_title)
+            display_title = process_page(site, variants['default'], 'en', base_title, output_dir, stats, force_full, convert_links, pages_by_base)
+            exported_pages["en"].append((display_title, base_title))
             expected_filenames_by_lang["en"].add(safe_name)
 
     if generate_index:
@@ -190,16 +190,28 @@ def dump_wiki_to_markdown_incremental(site_url, site_path, output_dir, force_ful
             with open(index_path, "w", encoding="utf-8") as f:
                 f.write(f"# Documentation Index ({lang.upper()})\n\n")
                 f.write(f"This is an automated structural index map of all available pages for this AI agent workspace.\n\n")
-                for page_title in sorted(exported_pages[lang]):
-                    safe_file = sanitize_filename(page_title)
-                    f.write(f"* [{page_title}](./{safe_file}.md)\n")
+                for display_title, b_title in sorted(exported_pages[lang], key=lambda x: x):
+                    safe_file = sanitize_filename(b_title)
+                    f.write(f"* [{display_title}](./{safe_file}.md)\n")
 
     if clean_deleted:
         purge_deleted_local_files(output_dir, expected_filenames_by_lang)
 
     print(f"\nDump finished! New/Updated: {stats['downloaded']} | Skipped (up-to-date): {stats['skipped']} | Failed: {stats['failed']}")
 
-def process_page(page_obj, lang, base_title, output_dir, stats, force_full, convert_links, all_valid_titles):
+def get_display_title(site, page_name, default_fallback):
+    """Queries the MediaWiki API directly to fetch the real localized displaytitle metadata property."""
+    try:
+        res = site.api('query', prop='info', inprop='displaytitle', titles=page_name)
+        pages = list(res.get('query', {}).get('pages', {}).values())
+        if pages and 'displaytitle' in pages[0]:
+            # Strip HTML tags like <i> if MediaWiki passes decorated title text strings
+            return re.sub(r'<[^>]*>', '', pages[0]['displaytitle']).strip()
+    except Exception:
+        pass
+    return default_fallback
+
+def process_page(site, page_obj, lang, base_title, output_dir, stats, force_full, convert_links, all_valid_titles):
     """Checks metadata first, skips if unchanged, otherwise downloads, cleans, and converts."""
     try:
         safe_title = sanitize_filename(base_title)
@@ -216,15 +228,18 @@ def process_page(page_obj, lang, base_title, output_dir, stats, force_full, conv
                 if cached_meta.get("revid") == live_revid:
                     print(f"[{lang.upper()}] Skipped (No changes): {base_title}")
                     stats["skipped"] += 1
-                    return
+                    return cached_meta.get("displaytitle", base_title)
             except Exception:
                 pass
+
+        # Cache missed or outdated -> Fetch displaytitle from API only now
+        display_title = get_display_title(site, page_obj.name, base_title)
 
         print(f"[{lang.upper()}] Downloading & converting: {base_title}")
         wikitext = page_obj.text()
 
         if not wikitext.strip():
-            return
+            return base_title
 
         markdown_content = mediawiki_to_markdown(wikitext)
 
@@ -232,11 +247,13 @@ def process_page(page_obj, lang, base_title, output_dir, stats, force_full, conv
             markdown_content = convert_internal_links(markdown_content, all_valid_titles)
 
         with open(file_path, "w", encoding="utf-8") as f:
-            f.write(f"# {base_title}\n\n")
+            # Writes the API-retrieved translated display_title directly inside the content payload
+            f.write(f"# {display_title}\n\n")
             f.write(markdown_content)
 
         meta_data = {
             "title": page_obj.name,
+            "displaytitle": display_title,
             "revid": live_revid,
             "lang": lang
         }
@@ -244,10 +261,12 @@ def process_page(page_obj, lang, base_title, output_dir, stats, force_full, conv
             json.dump(meta_data, f, indent=2)
 
         stats["downloaded"] += 1
+        return display_title
 
     except Exception as e:
         print(f"Error processing page '{page_obj.name}': {e}")
         stats["failed"] += 1
+        return base_title
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Dump any MediaWiki content instance into clean Markdown files.")
